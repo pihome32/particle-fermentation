@@ -1,7 +1,7 @@
 #include "probe.h"
 
 #ifndef DEBUG
-#define DEBUG true
+#define DEBUG false
 #endif
 
 OneWire* probe::_myWire = 0;  // static member initialization
@@ -47,9 +47,10 @@ boolean probe::isReady() {  //  initiate temperature and filter update with freq
   return false;
 }
 
-void probe::update() {
-  _updateTemp();
+boolean probe::update() {
+  boolean temp = _updateTemp();
   _updateFilter();
+  return temp;
 }
 
 boolean probe::_getAddr() {  // find next OneWire device, store rom address in probe struct

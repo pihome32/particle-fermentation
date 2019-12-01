@@ -1,7 +1,5 @@
 // This #include statement was automatically added by the Particle IDE.
-#include <OneWire.h>
-
-
+#include "OneWire.h"
 
 #include "math.h"
 #include <vector>
@@ -14,12 +12,11 @@
 
 
 
-#define DEBUG true  // debug flag for including debugging code
-
-
+#define DEBUG TRUE  // debug flag for including debugging code
+int errorCount;
 
 void setup() {
-    
+  errorCount=0;  
   // zone(-7);  //set timezone.  -7 is for MST in the US.
     
   pinMode(relay1, OUTPUT);  // configure relay pins and write default LOW (relay open)
@@ -60,8 +57,8 @@ void setup() {
   
   probe::startConv();  // start conversion for all sensors
   delay(1500);  
-  fridge.update();
-  beer.update();
+  if(!fridge.update()) ++errorCount;
+  if(!beer.update()) ++errorCount;
   Output = beer.getTemp();
   webLastupdate = 0;
   
@@ -85,6 +82,8 @@ void setup() {
 
   // Particle variables are mainly used for debug only.  Actual Partical data is shared to the web through particle.publish 
   // and webhooks.
+  #if DEBUG == true 
+    Particle.variable("errors", errorCount); 
     Particle.variable("mode", mode); 
     Particle.variable("fridgeState", curFridgeState);
     Particle.variable("beerTemp", Input);
@@ -101,7 +100,7 @@ void setup() {
     Particle.variable("heatKi", heatKi);
     Particle.variable("heatKd", heatKd);
     //  Particle.variable("peakest", peakest);  //Good for debug purposes. 
-    
+  #endif  
     // String for sending pid setting data to web app
     PIDsetting = "{\"Kp\":"+String(Kp)+",\"Ki\":"+String(Ki)+",\"Kd\":"+String(Kd)+",\"hKp\":"+String(heatKp)+",\"hKi\":"+String(heatKi)
     +",\"hKd\":"+String(heatKd)+",\"output\":"+String(Output)+",\"hOutput\":"+String(heatOutput)+",\"mainMode\":"+String(mainPID.GetMode())
@@ -157,13 +156,14 @@ void loop() {
 void mainUpdate()  {
   probe::startConv();               // start conversion for all sensors
       if (probe::isReady()) {       // update sensors when conversion complete
-        fridge.update();
-        beer.update();
-        Input = beer.getFilter();
+         if(!fridge.update()) ++errorCount;
+         if(!beer.update()) ++errorCount;
+        Input = beer.getFilter();  //getFilter();
         curBeerTemp = Input;
         curFridgeTemp = fridge.getFilter();
         heatInput = curFridgeTemp;
-      }
+}
+
   unsigned long now = millis();
   if ((now - fireWebLastupdate > 120000)){   //Update the firebase database with latest data once every 2 minute.
         fireWebLastupdate = now;
@@ -172,7 +172,7 @@ void mainUpdate()  {
         +",\"heatMode\":"+String(heatPID.GetMode())+"}";
         webPublish("");
   }  
-  if ((now - fireChartLastupdate > 600000)&& (mode != OFF)){  //When running in any temperature control mode send data for history chart once every 10 min.
+  if (((now - fireChartLastupdate > 600000)&& (mode != OFF))||(curFridgeState != getFridgeState(0))){  //When running in any temperature control mode send data for history chart once every 10 min.
         fireChartLastupdate = now;
         Particle.publish("chartData", String::format("{\"1\": \"%f\",\"2\": \"%f\",\"3\": \"%f\",\"4\": \"%d\"}"
         ,curBeerTemp,curFridgeTemp,Output,fridgeState[0]));

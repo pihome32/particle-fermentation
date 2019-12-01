@@ -2,7 +2,7 @@
 #define GLOBALS_Hhttps://build.particle.io/build/58054f3c4748893bf0001525/tab/globals.h#
 
 #define ONE_WIRE_BUS A0  //Photon pin the one wire temperature probes are connected.
-#define TEMPERATURE_PRECISION 12
+#define TEMPERATURE_PRECISION 10
 
 
 

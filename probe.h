@@ -4,7 +4,7 @@
 #include "application.h"
 //#include <Serial.h>
 //#include <avr/wdt.h>
-#include <OneWire.h>
+#include "OneWire.h"
 
 class probe {
     static OneWire* _myWire;
@@ -25,7 +25,7 @@ class probe {
   public:
     probe(OneWire* onewire) { if (!_myWire) _myWire = onewire; _getAddr(); }
     void init();
-    void update();
+    boolean update();
     boolean peakDetect();
     double getTemp() { return _temperature[0]; }
     double getFilter() { return _filter[0]; }
