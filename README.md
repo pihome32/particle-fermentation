@@ -6,4 +6,4 @@ A Particle project named Fermentor
 
 Copy all files to your prefered editor.
 
-Include the Particle Library - OneWire (2.0.3)
+Added OneWire lib local with modifications.  Particle OneWire generates too many read errors.
