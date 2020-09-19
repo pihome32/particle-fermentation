@@ -9,20 +9,38 @@
 #include "PID_v1.h"
 #include "fridge.h"
 #include "globals.h"
-
+#include "PCAL9535A.h"
+#include "MQTT.h"
 
 
 #define DEBUG TRUE  // debug flag for including debugging code
 int errorCount;
+PCAL9535A relay;
+void callback(char* topic, byte* payload, unsigned int length);
+MQTT client("10.70.1.76", 1883,callback);
 
 void setup() {
-  errorCount=0;  
+    
+  errorCount=0; 
+    analogWrite(DAC1,1000);
+    pinMode(coolerFanPIN, OUTPUT);
+    pinMode(heaterFanPIN, OUTPUT); 
+
+    relay.begin();      // use default address 0
+    relay.pinMode(0, OUTPUT);
+    relay.pinMode(1, OUTPUT);
+    relay.pinMode(2, OUTPUT);
+    relay.pinMode(3, OUTPUT);
+    relay.digitalWrite(0,LOW);
+    relay.digitalWrite(1,LOW);
+    relay.digitalWrite(2,LOW);
+    relay.digitalWrite(3,LOW);
   // zone(-7);  //set timezone.  -7 is for MST in the US.
     
-  pinMode(relay1, OUTPUT);  // configure relay pins and write default LOW (relay open)
-    digitalWrite(relay1, LOW); //Off for fridge
-  pinMode(relay2, OUTPUT);
-    analogWrite(relay2, 0, 1); //Off for heat relay
+  //pinMode(relay1, OUTPUT);  // configure relay pins and write default LOW (relay open)
+  //  digitalWrite(relay1, LOW); //Off for fridge
+  //pinMode(relay2, OUTPUT);
+   // analogWrite(relay2, 0, 1); //Off for heat relay
 
   
   mode = OFF; //init on powerup in the off state.
@@ -53,13 +71,23 @@ void setup() {
   // If one sensor is not conneced or otherwise fails to comunicate fridge and beer will read the saem temperature off the one working sensor
   // lacking a better fail safe this works pretty good.  
   fridge.init();
-  beer.init();
+  heater.init();  
+  board.init();
+  room.init();
+  chamber.init();
   
   probe::startConv();  // start conversion for all sensors
   delay(1500);  
   if(!fridge.update()) ++errorCount;
-  if(!beer.update()) ++errorCount;
-  Output = beer.getTemp();
+  if(!heater.update()) ++errorCount;
+  if(!room.update()) ++errorCount;
+  if(!board.update()) ++errorCount;  
+  if(!chamber.update()) ++errorCount;
+  Output = chamber.getTemp();
+  Particle.publish("room",String(room.getTemp()));
+  curBoardTemp = board.getTemp();
+  curRoomTemp = room.getTemp();
+  curHeaterTemp = heater.getTemp();
   webLastupdate = 0;
   
  // setup the initial PID settings
@@ -86,7 +114,10 @@ void setup() {
     Particle.variable("errors", errorCount); 
     Particle.variable("mode", mode); 
     Particle.variable("fridgeState", curFridgeState);
-    Particle.variable("beerTemp", Input);
+    Particle.variable("chamberTemp", Input);
+    Particle.variable("heaterTemp", curHeaterTemp);
+    Particle.variable("boardTemp", curBoardTemp);
+    Particle.variable("roomTemp", curRoomTemp);
     Particle.variable("fridgeTemp", curFridgeTemp);
     Particle.variable("setpoint", Setpoint); 
     Particle.variable("output", Output);
@@ -113,6 +144,8 @@ void setup() {
     Particle.function("setMode", setModeFunctionHandler); // send the operating mode from the web app.
     Particle.function("PIDSetup",PIDSettingHandler);  //  change PID settings from the web app.
     Particle.function("PIDSetMode",PIDSetModeHandler); // Change the PID mode for Manual tuning.  
+    Particle.function("Relay",RelayHandler);  
+    Particle.function("FAN",FANHandler);  
 }
 
 
@@ -121,12 +154,14 @@ void loop() {
         if (fridgeState[0] != IDLE){
             updateFridgeState(IDLE, IDLE);
         }
-        digitalWrite(relay1, LOW); //Off for fridge
-        analogWrite(relay2, 0, 1); //Off for heat relay
+        //digitalWrite(relay1, LOW); //Off for fridge
+        //analogWrite(relay2, 0, 1); //Off for heat relay
+        RelayHandler("00");
+        RelayHandler("10");
         mainUpdate();
         profileStart = 0;
     }
-    if (mode == BEER_CONSTANT){
+    if (mode == CHAMBER_CONSTANT){
         mainUpdate();  // subroutines manage their own timings, call every loop
         PIDUpdate();
     }
@@ -143,10 +178,10 @@ void loop() {
     if (mode == MAN){
         mainUpdate();
         if (heatPID.GetMode() == MANUAL){
-            analogWrite(relay2, heatOutput*2.55, 1);
+            //analogWrite(relay2, heatOutput*2.55, 1);
         }
         if (mainPID.GetMode() == MANUAL ){
-            updateFridge(); 
+            //updateFridge(); 
         }
     }
 }
@@ -157,15 +192,21 @@ void mainUpdate()  {
   probe::startConv();               // start conversion for all sensors
       if (probe::isReady()) {       // update sensors when conversion complete
          if(!fridge.update()) ++errorCount;
-         if(!beer.update()) ++errorCount;
-        Input = beer.getFilter();  //getFilter();
-        curBeerTemp = Input;
+         if(!heater.update()) ++errorCount;
+         if(!board.update()) ++errorCount;
+         if(!room.update()) ++errorCount;         
+         if(!chamber.update()) ++errorCount;
+        Input = chamber.getFilter();  //getFilter();
+        curChamberTemp = Input;
         curFridgeTemp = fridge.getFilter();
         heatInput = curFridgeTemp;
-}
+        curBoardTemp = board.getTemp();
+        curRoomTemp = room.getTemp();
+        curHeaterTemp = heater.getFilter();
+      }
 
   unsigned long now = millis();
-  if ((now - fireWebLastupdate > 120000)){   //Update the firebase database with latest data once every 2 minute.
+  if ((now - fireWebLastupdate > 60000)){   //Update the firebase database with latest data once every 1 minute.
         fireWebLastupdate = now;
         PIDsetting = "{\"Kp\":"+String(Kp)+",\"Ki\":"+String(Ki)+",\"Kd\":"+String(Kd)+",\"hKp\":"+String(heatKp)+",\"hKi\":"+String(heatKi)
         +",\"hKd\":"+String(heatKd)+",\"output\":"+String(Output)+",\"hOutput\":"+String(heatOutput)+",\"mainMode\":"+String(mainPID.GetMode())
@@ -175,7 +216,7 @@ void mainUpdate()  {
   if (((now - fireChartLastupdate > 600000)&& (mode != OFF))||(curFridgeState != getFridgeState(0))){  //When running in any temperature control mode send data for history chart once every 10 min.
         fireChartLastupdate = now;
         Particle.publish("chartData", String::format("{\"1\": \"%f\",\"2\": \"%f\",\"3\": \"%f\",\"4\": \"%d\"}"
-        ,curBeerTemp,curFridgeTemp,Output,fridgeState[0]));
+        ,curChamberTemp,curFridgeTemp,Output,fridgeState[0]));
   }
   pastFridgeState = getFridgeState(1);
   curFridgeState = getFridgeState(0);
@@ -184,11 +225,27 @@ void mainUpdate()  {
         webPublish("");
   }
 }
+int RelayHandler(String x){
+    int gpio = x.substring(0,1).toInt();
+    int state = x.substring(1,2).toInt();
+    relay.digitalWrite(gpio,state);
+    return 1;
+}
+int FANHandler(String x){
+    int fan = x.substring(0,1).toInt();
+    x.remove(0,x.indexOf(",")+1);
+    int speed = x.toInt();
+    analogWrite(coolerFanPIN,speed);
+
+    return 1;
+}
 
 void PIDUpdate(){
     mainPID.Compute();   // update main PID
     updateFridge();     // update fridge status
 }
+
+
 
 // Function to handle particle cloud sending an updated target fridge chamber temperature
 double setSetpointFunctionHandler (String x) {
@@ -356,14 +413,52 @@ int webPublish(String x){
     //Particle.publish("webPage", String::format("{\"1\": \"%f\",\"2\": \"%f\",\"3\": \"%f\",\"4\": \"%d\",\"5\": \"%d\",\"6\": \"%d\",\"7\": \"%d\",\"8\": \"%f\",\"9\": \"%s\",\"10\": \"%d\"}"
    // ,curBeerTemp,curFridgeTemp,Output,fridgeState[0],fridgeState[1],startTime,mode,Setpoint,profileName.c_str(),profileStart));
     
-    Particle.publish("PubSub", String::format("{\"1\": \"%f\",\"2\": \"%f\",\"3\": \"%f\",\"4\": \"%d\",\"5\": \"%d\",\"6\": \"%d\",\"7\": \"%d\",\"8\": \"%f\",\"9\": \"%s\",\"10\": \"%d\"}"
-    ,curBeerTemp,curFridgeTemp,Output,fridgeState[0],fridgeState[1],startTime,mode,Setpoint,profileName.c_str(),profileStart));
+    Particle.publish("PubSub", String::format("{\"1\": \"%f\",\"2\": \"%f\",\"3\": \"%f\",\"4\": \"%d\",\"5\": \"%d\",\"6\": \"%d\",\"7\": \"%d\",\"8\": \"%f\",\"9\": \"%s\",\"10\": \"%d\",\"11\": \"%f\",\"12\": \"%f\",\"13\": \"%f\"}"
+    ,curChamberTemp,curFridgeTemp,Output,fridgeState[0],fridgeState[1],startTime,mode,Setpoint,profileName.c_str(),profileStart,curRoomTemp,curHeaterTemp,curBoardTemp));
+    client.connect("photonBread");
+    if (client.isConnected()) {
+        client.publish("chamber/data/temp/mode","chamber,type'='mode Mode=" +String(mode));
+        client.publish("chamber/data/temp/heater","chamber,type'='temperature HeaterTemperature=" +String(curHeaterTemp));
+        client.publish("chamber/data/temp/chamber","chamber,type'='temperature ChamberTemperature=" +String(curChamberTemp));    
+        client.publish("chamber/data/temp/room","chamber,type'='temperature RoomTemperature=" +String(curRoomTemp));    
+        client.publish("chamber/data/temp/cooler","chamber,type'='temperature FridgeTemperature=" +String(curFridgeTemp));    
+        client.publish("chamber/data/temp/board","chamber,type'='temperature BoardTemperature=" +String(curBoardTemp));
+        client.publish("chamber/data/setpoint","chamber,type'='temperature Setpoint=" + String(Setpoint));
+        client.publish("chamber/data/output","chamber,type'='temperature Output=" + String(Output));
+        client.publish("chamber/data/fridgestate0","chamber,type'='state FridgeState0=" + String(fridgeState[0]));
+        client.publish("chamber/data/fridgestate1","chamber,type'='state FridgeState1=" + String(fridgeState[1]));
+        client.publish("chamber/data/temp/profile","chamber,type'='profile ProfileName=" + String(profileName.c_str()));
+        //client.publish("chamber/data/fanspeed/heater","chamber,type'='fan speed-heater-FAN=" + String(heaterFanSpeed));
+
+        //client.publish("chamber/data/fanspeed/cooler","chamber,type'='fan speed-cooler-FAN=" + String(coolerFanSpeed));
     
-   
+        //client.publish("chamber/data/distance","chamber,type'='distance distance=" + String(distance));
+    
+        //client.publish("chamber/data/dacVoltage","chamber,type'='voltage dacVoltage=" + String(dacVoltage));
+    
+        //client.publish("chamber/data/dacLevel","chamber,type'='voltage daclevel=" + String(dacLevel));
+    
+        
+    
+        //client.publish("chamber/data/relayCooler","chamber,type'='relay relayCooler=" + String(coolerRelayState));
+    
+        //client.publish("chamber/data/relayHeater","chamber,type'='relay relayHeater=" + String(heaterRelayState));
+    
+        //client.publish("chamber/data/heatingPower","chamber,type'='power heatingPower=" + String(heatingPower));
+    
+        //client.publish("chamber/data/coolingPower","chamber,type'='power coolingPower=" + String(coolingPower));
+    }
+
+
+
  
     return 1;
 }
 
+
+void callback(char* topic, byte* payload, unsigned int length) {
+    
+}
 
 
 
